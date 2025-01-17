@@ -11,15 +11,14 @@ import base64
 import ldap
 from ldap.filter import escape_filter_chars
 import argparse
+import logging
 
-if sys.version_info.major == 2:
-    from Cookie import BaseCookie
-    from BaseHTTPServer import HTTPServer, BaseHTTPRequestHandler
-elif sys.version_info.major == 3:
-    from http.cookies import BaseCookie
-    from http.server import HTTPServer, BaseHTTPRequestHandler
+from http.cookies import BaseCookie
+from http.server import HTTPServer, BaseHTTPRequestHandler
+from socketserver import ThreadingMixIn
 
-if not hasattr(__builtins__, "basestring"): basestring = (str, bytes)
+if not hasattr(__builtins__, "basestring"): 
+    basestring = str
 
 #Listen = ('localhost', 8888)
 #Listen = "/tmp/auth.sock"    # Also uncomment lines in 'Requests are
@@ -30,11 +29,6 @@ if not hasattr(__builtins__, "basestring"): basestring = (str, bytes)
 # -----------------------------------------------------------------------------
 # Requests are processed in separate thread
 import threading
-
-if sys.version_info.major == 2:
-    from SocketServer import ThreadingMixIn
-elif sys.version_info.major == 3:
-    from socketserver import ThreadingMixIn
 
 class AuthHTTPServer(ThreadingMixIn, HTTPServer):
     pass
@@ -50,6 +44,24 @@ class AuthHTTPServer(ThreadingMixIn, HTTPServer):
 #class AuthHTTPServer(ThreadingUnixStreamServer, HTTPServer):
 #    pass
 # -----------------------------------------------------------------------------
+
+def setup_logging(log_file=None):
+    log_format = '%(asctime)s - %(levelname)s - %(message)s'
+    if log_file:
+        logging.basicConfig(
+            level=logging.INFO,
+            format=log_format,
+            handlers=[
+                logging.FileHandler(log_file),
+                logging.StreamHandler(sys.stdout)
+            ]
+        )
+    else:
+        logging.basicConfig(
+            level=logging.INFO,
+            format=log_format,
+            stream=sys.stdout
+        )
 
 class AuthHandler(BaseHTTPRequestHandler):
 
@@ -89,8 +101,7 @@ class AuthHandler(BaseHTTPRequestHandler):
         ctx['action'] = 'decoding credentials'
 
         try:
-            auth_decoded = base64.b64decode(auth_header[6:])
-            if sys.version_info.major == 3: auth_decoded = auth_decoded.decode("utf-8")
+            auth_decoded = base64.b64decode(auth_header[6:]).decode("utf-8")
             user, passwd = auth_decoded.split(':', 1)
 
         except:
@@ -153,11 +164,13 @@ class AuthHandler(BaseHTTPRequestHandler):
         else:
             user = self.ctx['user']
 
-        sys.stdout.write("%s - %s [%s] %s\n" % (addr, user,
-                         self.log_date_time_string(), format % args))
+        message = "%s - %s [%s] %s" % (addr, user,
+                    self.log_date_time_string(), format % args)
+        logging.info(message)
 
     def log_error(self, format, *args):
-        self.log_message(format, *args)
+        message = format % args
+        logging.error(message)
 
 
 # Verify username/password against LDAP server
@@ -193,7 +206,6 @@ class LDAPAuthHandler(AuthHandler):
         ctx['user'] = '-'
 
         if AuthHandler.do_GET(self):
-            # request already processed
             return
 
         ctx['action'] = 'empty password check'
@@ -203,7 +215,6 @@ class LDAPAuthHandler(AuthHandler):
 
         try:
             # check that uri and baseDn are set
-            # either from cli or a request
             if not ctx['url']:
                 self.log_message('LDAP URL is not set!')
                 return
@@ -212,16 +223,15 @@ class LDAPAuthHandler(AuthHandler):
                 return
 
             ctx['action'] = 'initializing LDAP connection'
-            ldap_obj = ldap.initialize(ctx['url']);
+            ldap_obj = ldap.initialize(ctx['url'])
+            
+            # Добавляем игнорирование проверки SSL сертификата
+            ldap.set_option(ldap.OPT_X_TLS_REQUIRE_CERT, ldap.OPT_X_TLS_NEVER)
+            ldap_obj.set_option(ldap.OPT_X_TLS_REQUIRE_CERT, ldap.OPT_X_TLS_NEVER)
+            ldap_obj.set_option(ldap.OPT_REFERRALS, 0)
 
-            # Python-ldap module documentation advises to always
-            # explicitely set the LDAP version to use after running
-            # initialize() and recommends using LDAPv3. (LDAPv2 is
-            # deprecated since 2003 as per RFC3494)
-            #
-            # Also, the STARTTLS extension requires the
-            # use of LDAPv3 (RFC2830).
-            ldap_obj.protocol_version=ldap.VERSION3
+            # Остальной код остается без изменений
+            ldap_obj.protocol_version = ldap.VERSION3
 
             # Establish a STARTTLS connection if required by the
             # headers.
@@ -327,6 +337,10 @@ if __name__ == '__main__':
         default="Restricted", help='HTTP auth realm (Default: "Restricted")')
     group.add_argument('-c', '--cookie', metavar="cookiename",
         default="", help="HTTP cookie name to set in (Default: unset)")
+    # Logging options:
+    group = parser.add_argument_group("Logging options")
+    group.add_argument('--log-file', metavar="file",
+        help="Path to log file (Default: stdout)")
 
     args = parser.parse_args()
     global Listen
@@ -343,6 +357,8 @@ if __name__ == '__main__':
              'cookiename': ('X-CookieName', args.cookie)
     }
     LDAPAuthHandler.set_params(auth_params)
+    # Initialize logging
+    setup_logging(args.log_file)
     server = AuthHTTPServer(Listen, LDAPAuthHandler)
     signal.signal(signal.SIGINT, exit_handler)
     signal.signal(signal.SIGTERM, exit_handler)

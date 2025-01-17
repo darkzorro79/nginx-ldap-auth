@@ -1,0 +1,47 @@
+FROM debian:11-slim
+
+# Установка необходимых утилит
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+    curl \
+    ca-certificates \
+    locales \
+    && locale-gen ru_RU.UTF-8 \
+    && rm -rf /var/lib/apt/lists/*
+
+# 2. Включаем нужную локаль (ru_RU.UTF-8) в системе:
+RUN sed -i '/ru_RU.UTF-8/s/^# //g' /etc/locale.gen && \
+    locale-gen
+
+# 3. Устанавливаем переменные окружения так,
+#    чтобы по умолчанию система была на ru_RU.UTF-8
+ENV LANG=ru_RU.UTF-8
+ENV LANGUAGE=ru_RU:ru
+ENV LC_ALL=ru_RU.UTF-8
+
+# 4. Копируем скрипт
+
+COPY nginx-ldap-auth-daemon.py /usr/src/app/
+
+WORKDIR /usr/src/app/
+
+# Copy certificates and update CA store
+
+#RUN update-ca-certificates -v
+
+# Install required software
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+    libldap2-dev \
+    libsasl2-dev \
+    python3-pip \
+    python3-dev \
+    iputils-ping \
+    build-essential \
+    ca-certificates && \
+    pip3 install python-ldap && \
+    apt-get autoremove -y 
+
+EXPOSE 8888
+
+CMD ["python3", "/usr/src/app/nginx-ldap-auth-daemon.py", "--host", "0.0.0.0", "--port", "8888", "--log-file", "/var/log/nginx/nginx-ldap-auth-daemon.log"]
